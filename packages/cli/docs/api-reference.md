@@ -109,6 +109,13 @@ All `browser` subcommands support:
 |------|------|------|
 | `--timeout <ms>` | u64 | Timeout in milliseconds |
 | `--json` | bool | JSON output (default is plain text) |
+| `--legacy-output` | bool | Force legacy plain-text output (AXI migration compatibility mode) |
+
+AXI migration notes:
+
+- Default stdout output for non-browser commands is TOON (token-efficient structured text).
+- `--json` returns the JSON envelope.
+- `--legacy-output` preserves legacy plain-text behavior where supported.
 
 ### 2.3 Addressing Levels
 

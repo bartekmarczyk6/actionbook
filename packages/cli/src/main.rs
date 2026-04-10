@@ -6,7 +6,9 @@ use serde_json::json;
 use actionbook_cli::action_result::ActionResult;
 use actionbook_cli::cli::{BrowserCommands, Cli, Commands};
 use actionbook_cli::config;
-use actionbook_cli::output::{self, JsonEnvelope};
+use actionbook_cli::output::{
+    self, AxiRenderOptions, JsonEnvelope, render_axi_error, render_axi_success, resolve_stdout_mode,
+};
 use actionbook_cli::utils::client::DaemonClient;
 
 #[tokio::main]
@@ -40,10 +42,12 @@ async fn main() {
     {
         let raw_args: Vec<String> = std::env::args().collect();
         let json_mode = raw_args.iter().any(|a| a == "--json");
+        let legacy_output = raw_args.iter().any(|a| a == "--legacy-output");
+        let explicit_help_flag = raw_args.iter().any(|a| a == "--help" || a == "-h");
 
         // Intercept --version before positional dispatch so it doesn't fall through to help
         if raw_args.iter().any(|a| a == "--version" || a == "-V") {
-            handle_version(json_mode);
+            handle_version(json_mode, legacy_output);
             return;
         }
 
@@ -66,32 +70,78 @@ async fn main() {
         }
 
         match positional_args.as_slice() {
-            // `actionbook` (no args), `actionbook --help`, `actionbook help`
-            [] | ["help"] => {
-                handle_help(json_mode);
+            // `actionbook` (no args)
+            [] => {
+                if explicit_help_flag {
+                    handle_help(json_mode, legacy_output);
+                } else {
+                    handle_home(json_mode, legacy_output);
+                }
+                return;
+            }
+            // `actionbook help`
+            ["help"] => {
+                handle_help(json_mode, legacy_output);
                 return;
             }
             // `actionbook browser`, `actionbook browser --help`, `actionbook browser help`
             ["browser"] | ["browser", "help"] => {
-                handle_browser_help(json_mode);
+                handle_browser_help(json_mode, legacy_output);
                 return;
             }
             _ => {}
         }
     }
 
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => {
+            let raw_args: Vec<String> = std::env::args().collect();
+            let json_mode = raw_args.iter().any(|a| a == "--json");
+            let legacy_output = raw_args.iter().any(|a| a == "--legacy-output");
+            let mode = resolve_stdout_mode(json_mode, legacy_output);
+            let output = render_axi_error(
+                "usage",
+                "INVALID_ARGUMENT",
+                &err.to_string(),
+                "Run actionbook --help",
+                AxiRenderOptions {
+                    mode,
+                    duration: Duration::ZERO,
+                    include_meta: false,
+                },
+            );
+            println!("{output}");
+            std::process::exit(2);
+        }
+    };
     let json_output = cli.json;
+    let legacy_output = cli.legacy_output;
     let is_setup_command = matches!(cli.command.as_ref(), Some(Commands::Setup(_)));
+
+    if cli.hook_session_end {
+        if let Err(err) = actionbook_cli::hooks::capture_session_end() {
+            tracing::debug!("failed to capture session-end context: {err}");
+        }
+        return;
+    }
+    if cli.hook_session_start {
+        handle_home(false, false);
+        return;
+    }
+
+    if let Err(e) = actionbook_cli::hooks::install_or_repair_hooks() {
+        tracing::debug!("failed to install/repair hooks: {e}");
+    }
 
     // Handle --version before subcommand dispatch
     if cli.version {
-        handle_version(json_output);
+        handle_version(json_output, legacy_output);
         return;
     }
 
     if cli.command.is_none() {
-        handle_help(json_output);
+        handle_home(json_output, legacy_output);
         return;
     }
 
@@ -104,18 +154,20 @@ async fn main() {
                 Some(cli_err) => (cli_err.error_code().to_string(), cli_err.hint().to_string()),
                 None => ("INTERNAL_ERROR".to_string(), String::new()),
             };
-            if json_output && !is_setup_command {
-                let envelope = JsonEnvelope::error(
+            if !is_setup_command {
+                let mode = resolve_stdout_mode(json_output, legacy_output);
+                let out = render_axi_error(
                     "unknown",
-                    None,
                     &code,
                     &e.to_string(),
-                    false,
-                    serde_json::Value::Null,
                     &hint,
-                    std::time::Duration::ZERO,
+                    AxiRenderOptions {
+                        mode,
+                        duration: Duration::ZERO,
+                        include_meta: false,
+                    },
                 );
-                println!("{}", serde_json::to_string(&envelope).unwrap_or_default());
+                println!("{out}");
             } else {
                 eprintln!("error {code}: {e}");
                 if !hint.is_empty() {
@@ -139,6 +191,7 @@ async fn run(mut cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             url,
             page,
             page_size,
+            fields,
         } => {
             actionbook_cli::commands::search::run(
                 &cli,
@@ -147,23 +200,28 @@ async fn run(mut cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 url.as_deref(),
                 page,
                 page_size,
+                fields.as_deref(),
             )
             .await?;
         }
-        Commands::Get { area_id } => {
-            actionbook_cli::commands::get::run(&cli, &area_id).await?;
+        Commands::Get {
+            area_id,
+            fields,
+            full,
+        } => {
+            actionbook_cli::commands::get::run(&cli, &area_id, fields.as_deref(), full).await?;
         }
         Commands::Browser { command } => {
-            handle_browser(command, json_mode, timeout_ms).await?;
+            handle_browser(command, json_mode, cli.legacy_output, timeout_ms).await?;
         }
         Commands::Setup(cmd) => {
             actionbook_cli::setup::execute(&cmd, json_mode).await?;
         }
         Commands::Help => {
-            handle_help(json_mode);
+            handle_help(json_mode, cli.legacy_output);
         }
         Commands::Version => {
-            handle_version(json_mode);
+            handle_version(json_mode, cli.legacy_output);
         }
     }
     Ok(())
@@ -172,10 +230,11 @@ async fn run(mut cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 async fn handle_browser(
     command: BrowserCommands,
     json_mode: bool,
+    legacy_output: bool,
     timeout_ms: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if matches!(command, BrowserCommands::Help) {
-        handle_browser_help(json_mode);
+        handle_browser_help(json_mode, legacy_output);
         return Ok(());
     }
 
@@ -288,18 +347,53 @@ async fn handle_browser(
     Ok(())
 }
 
-fn handle_version(json_mode: bool) {
+fn handle_version(json_mode: bool, legacy_output: bool) {
     let version = env!("CARGO_PKG_VERSION");
-    if json_mode {
-        let envelope =
-            JsonEnvelope::success("version", None, json!(version), std::time::Duration::ZERO);
-        println!("{}", serde_json::to_string(&envelope).unwrap_or_default());
-    } else {
-        println!("{version}");
-    }
+    let mode = resolve_stdout_mode(json_mode, legacy_output);
+    let out = render_axi_success(
+        "version",
+        json!({ "version": version }),
+        version,
+        AxiRenderOptions {
+            mode,
+            duration: Duration::ZERO,
+            include_meta: false,
+        },
+    );
+    println!("{out}");
 }
 
-fn handle_help(json_mode: bool) {
+fn handle_home(json_mode: bool, legacy_output: bool) {
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(str::to_string))
+        .unwrap_or_else(|| "actionbook".to_string());
+    let display_exe = collapse_home(&exe);
+    let data = json!({
+        "bin": display_exe,
+        "description": "Manage browser automation actions in the current workspace",
+        "help": [
+            "Run actionbook search \"<query>\"",
+            "Run actionbook browser start --set-session-id s1",
+            "Run actionbook browser --help for browser subcommands"
+        ]
+    });
+
+    let mode = resolve_stdout_mode(json_mode, legacy_output);
+    let out = render_axi_success(
+        "home",
+        data,
+        "Run actionbook --help",
+        AxiRenderOptions {
+            mode,
+            duration: Duration::ZERO,
+            include_meta: false,
+        },
+    );
+    println!("{out}");
+}
+
+fn handle_help(json_mode: bool, legacy_output: bool) {
     let help_text = "\
 Actionbook — browser automation for AI agents
 
@@ -328,16 +422,21 @@ Quick start:
 
 Run actionbook browser --help to see all browser subcommands.";
 
-    if json_mode {
-        let envelope =
-            JsonEnvelope::success("help", None, json!(help_text), std::time::Duration::ZERO);
-        println!("{}", serde_json::to_string(&envelope).unwrap_or_default());
-    } else {
-        println!("{help_text}");
-    }
+    let mode = resolve_stdout_mode(json_mode, legacy_output);
+    let out = render_axi_success(
+        "help",
+        json!({ "text": help_text }),
+        help_text,
+        AxiRenderOptions {
+            mode,
+            duration: Duration::ZERO,
+            include_meta: false,
+        },
+    );
+    println!("{out}");
 }
 
-fn handle_browser_help(json_mode: bool) {
+fn handle_browser_help(json_mode: bool, legacy_output: bool) {
     let help_text = "\
 Usage: actionbook browser <subcommand> [options]
 
@@ -434,15 +533,26 @@ Quick start:
 
 Run actionbook browser <subcommand> --help for full usage and examples.";
 
-    if json_mode {
-        let envelope = JsonEnvelope::success(
-            "browser help",
-            None,
-            json!(help_text),
-            std::time::Duration::ZERO,
-        );
-        println!("{}", serde_json::to_string(&envelope).unwrap_or_default());
-    } else {
-        println!("{help_text}");
+    let mode = resolve_stdout_mode(json_mode, legacy_output);
+    let out = render_axi_success(
+        "browser help",
+        json!({ "text": help_text }),
+        help_text,
+        AxiRenderOptions {
+            mode,
+            duration: Duration::ZERO,
+            include_meta: false,
+        },
+    );
+    println!("{out}");
+}
+
+fn collapse_home(path: &str) -> String {
+    if let Some(home) = dirs::home_dir()
+        && let Some(home) = home.to_str()
+        && let Some(rest) = path.strip_prefix(home)
+    {
+        return format!("~{rest}");
     }
+    path.to_string()
 }

@@ -4,6 +4,171 @@ use std::time::Duration;
 
 use crate::action_result::ActionResult;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StdoutMode {
+    Json,
+    Legacy,
+    Toon,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AxiRenderOptions {
+    pub mode: StdoutMode,
+    pub duration: Duration,
+    pub include_meta: bool,
+}
+
+pub fn render_axi_success(
+    command: &str,
+    data: Value,
+    legacy_text: &str,
+    options: AxiRenderOptions,
+) -> String {
+    match options.mode {
+        StdoutMode::Json => {
+            let envelope = JsonEnvelope::success(command, None, data, options.duration);
+            serde_json::to_string(&envelope).unwrap_or_default()
+        }
+        StdoutMode::Legacy => legacy_text.to_string(),
+        StdoutMode::Toon => {
+            let mut root = serde_json::Map::new();
+            root.insert("ok".to_string(), Value::Bool(true));
+            root.insert("command".to_string(), Value::String(command.to_string()));
+            root.insert("data".to_string(), data);
+            if options.include_meta {
+                root.insert(
+                    "meta".to_string(),
+                    serde_json::json!({
+                        "duration_ms": options.duration.as_millis() as u64
+                    }),
+                );
+            }
+            render_toon_value(&Value::Object(root))
+        }
+    }
+}
+
+pub fn render_axi_error(
+    command: &str,
+    code: &str,
+    message: &str,
+    hint: &str,
+    options: AxiRenderOptions,
+) -> String {
+    match options.mode {
+        StdoutMode::Json => {
+            let envelope = JsonEnvelope::error(
+                command,
+                None,
+                code,
+                message,
+                false,
+                Value::Null,
+                hint,
+                options.duration,
+            );
+            serde_json::to_string(&envelope).unwrap_or_default()
+        }
+        StdoutMode::Legacy => {
+            if hint.is_empty() {
+                format!("error {code}: {message}")
+            } else {
+                format!("error {code}: {message}\nhint: {hint}")
+            }
+        }
+        StdoutMode::Toon => {
+            let mut root = serde_json::Map::new();
+            root.insert("ok".to_string(), Value::Bool(false));
+            root.insert("command".to_string(), Value::String(command.to_string()));
+            root.insert(
+                "error".to_string(),
+                serde_json::json!({
+                    "code": code,
+                    "message": message,
+                    "hint": hint
+                }),
+            );
+            render_toon_value(&Value::Object(root))
+        }
+    }
+}
+
+pub fn resolve_stdout_mode(json: bool, legacy_output: bool) -> StdoutMode {
+    if json {
+        StdoutMode::Json
+    } else if legacy_output {
+        StdoutMode::Legacy
+    } else {
+        StdoutMode::Toon
+    }
+}
+
+pub fn truncate_text_preview(input: &str, max_chars: usize) -> (String, bool, usize) {
+    let total = input.chars().count();
+    if total <= max_chars {
+        return (input.to_string(), false, total);
+    }
+    let preview: String = input.chars().take(max_chars).collect();
+    (preview, true, total)
+}
+
+pub fn render_toon_value(value: &Value) -> String {
+    let mut lines = Vec::new();
+    render_toon_node(None, value, 0, &mut lines);
+    lines.join("\n")
+}
+
+fn render_toon_node(key: Option<&str>, value: &Value, indent: usize, lines: &mut Vec<String>) {
+    let pad = "  ".repeat(indent);
+    match value {
+        Value::Object(map) => {
+            if let Some(k) = key {
+                lines.push(format!("{pad}{k}:"));
+            }
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            for k in keys {
+                if let Some(v) = map.get(k) {
+                    render_toon_node(Some(k), v, indent + usize::from(key.is_some()), lines);
+                }
+            }
+        }
+        Value::Array(arr) => {
+            if let Some(k) = key {
+                lines.push(format!("{pad}{k}[{}]:", arr.len()));
+            }
+            for item in arr {
+                match item {
+                    Value::Object(_) | Value::Array(_) => {
+                        lines.push(format!("{pad}  -"));
+                        render_toon_node(None, item, indent + 2, lines);
+                    }
+                    _ => {
+                        lines.push(format!("{pad}  - {}", scalar_to_toon(item)));
+                    }
+                }
+            }
+        }
+        _ => {
+            if let Some(k) = key {
+                lines.push(format!("{pad}{k}: {}", scalar_to_toon(value)));
+            } else {
+                lines.push(format!("{pad}{}", scalar_to_toon(value)));
+            }
+        }
+    }
+}
+
+fn scalar_to_toon(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.to_string(),
+        _ => value.to_string(),
+    }
+}
+
 /// §2.4 JSON envelope.
 #[derive(Debug, Serialize)]
 pub struct JsonEnvelope {
@@ -929,9 +1094,13 @@ fn format_new_tab_opened_tabs(
 
 #[cfg(test)]
 mod tests {
-    use super::{ResponseContext, format_text};
+    use super::{
+        AxiRenderOptions, ResponseContext, StdoutMode, format_text, render_axi_error,
+        render_axi_success, render_toon_value, truncate_text_preview,
+    };
     use crate::action_result::ActionResult;
     use serde_json::json;
+    use std::time::Duration;
 
     #[test]
     fn browser_eval_text_renders_string_value() {
@@ -1030,5 +1199,58 @@ mod tests {
             text,
             "1/2 tabs opened in session s0\n[s0 t2] https://a.com\n[failed] javascript:alert(1) - INVALID_ARGUMENT: dangerous URL protocol blocked: javascript:alert(1)"
         );
+    }
+
+    #[test]
+    fn toon_renderer_outputs_nested_fields() {
+        let value = json!({
+            "tasks": [
+                { "id": "1", "title": "Fix auth bug", "status": "open" }
+            ],
+            "count": 1
+        });
+        let rendered = render_toon_value(&value);
+        assert!(rendered.contains("count: 1"));
+        assert!(rendered.contains("tasks[1]:"));
+    }
+
+    #[test]
+    fn truncate_preview_marks_truncated() {
+        let (preview, truncated, total) = truncate_text_preview("abcdef", 3);
+        assert_eq!(preview, "abc");
+        assert!(truncated);
+        assert_eq!(total, 6);
+    }
+
+    #[test]
+    fn axi_error_toon_has_structured_fields() {
+        let out = render_axi_error(
+            "search",
+            "INVALID_ARGUMENT",
+            "--title is required",
+            "Run actionbook search \"<query>\"",
+            AxiRenderOptions {
+                mode: StdoutMode::Toon,
+                duration: Duration::ZERO,
+                include_meta: false,
+            },
+        );
+        assert!(out.contains("ok: false"));
+        assert!(out.contains("code: INVALID_ARGUMENT"));
+    }
+
+    #[test]
+    fn axi_success_legacy_passthrough() {
+        let out = render_axi_success(
+            "search",
+            json!({"count": 0}),
+            "legacy output",
+            AxiRenderOptions {
+                mode: StdoutMode::Legacy,
+                duration: Duration::ZERO,
+                include_meta: false,
+            },
+        );
+        assert_eq!(out, "legacy output");
     }
 }

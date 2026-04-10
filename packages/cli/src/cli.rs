@@ -17,6 +17,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// Use legacy plain-text output format instead of AXI TOON output
+    #[arg(long, global = true)]
+    pub legacy_output: bool,
+
     /// Timeout in milliseconds
     #[arg(long, global = true)]
     pub timeout: Option<u64>,
@@ -33,6 +37,14 @@ pub struct Cli {
     /// Print version
     #[arg(long, short = 'v')]
     pub version: bool,
+
+    /// Internal hook: emit compact AXI session-start context
+    #[arg(long, hide = true)]
+    pub hook_session_start: bool,
+
+    /// Internal hook: capture session-end context
+    #[arg(long, hide = true)]
+    pub hook_session_end: bool,
 
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -59,14 +71,26 @@ pub enum Commands {
         page: u32,
 
         /// Results per page (1-100)
-        #[arg(short = 's', long, default_value = "10")]
+        #[arg(short = 's', long, default_value = "100")]
         page_size: u32,
+
+        /// Comma-separated fields to include in output (AXI mode)
+        #[arg(long)]
+        fields: Option<String>,
     },
 
     /// Get complete action details by area ID
     Get {
         /// Area ID (e.g., "airbnb.com:/:default")
         area_id: String,
+
+        /// Comma-separated fields to include in output (AXI mode)
+        #[arg(long)]
+        fields: Option<String>,
+
+        /// Return full untruncated long text fields
+        #[arg(long)]
+        full: bool,
     },
 
     /// Browser automation commands
