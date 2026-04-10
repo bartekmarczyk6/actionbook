@@ -1,7 +1,7 @@
 use assert_cmd::Command;
 
 #[test]
-fn version_flag_prints_plain_version_string() {
+fn version_flag_defaults_to_axi_toon() {
     let output = Command::cargo_bin("actionbook")
         .expect("binary exists")
         .args(["--version"])
@@ -16,11 +16,9 @@ fn version_flag_prints_plain_version_string() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), env!("CARGO_PKG_VERSION"));
-    assert!(
-        !stdout.contains("Usage:"),
-        "--version must not fall through to help output: {stdout}"
-    );
+    assert!(stdout.contains("command: version"));
+    assert!(stdout.contains("ok: true"));
+    assert!(stdout.contains(env!("CARGO_PKG_VERSION")));
 }
 
 #[test]
@@ -44,6 +42,25 @@ fn version_flag_json_returns_version_envelope() {
     assert_eq!(json["ok"], true);
     assert_eq!(json["command"], "version");
     assert!(json["context"].is_null());
-    assert_eq!(json["data"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(json["data"]["version"], env!("CARGO_PKG_VERSION"));
     assert!(json["error"].is_null());
+}
+
+#[test]
+fn version_flag_legacy_output_is_plain_string() {
+    let output = Command::cargo_bin("actionbook")
+        .expect("binary exists")
+        .args(["--legacy-output", "--version"])
+        .output()
+        .expect("run --legacy-output --version");
+
+    assert!(
+        output.status.success(),
+        "expected --legacy-output --version success\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), env!("CARGO_PKG_VERSION"));
 }

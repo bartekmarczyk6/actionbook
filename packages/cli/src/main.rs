@@ -43,6 +43,7 @@ async fn main() {
         let raw_args: Vec<String> = std::env::args().collect();
         let json_mode = raw_args.iter().any(|a| a == "--json");
         let legacy_output = raw_args.iter().any(|a| a == "--legacy-output");
+        let explicit_help_flag = raw_args.iter().any(|a| a == "--help" || a == "-h");
 
         // Intercept --version before positional dispatch so it doesn't fall through to help
         if raw_args.iter().any(|a| a == "--version" || a == "-V") {
@@ -69,9 +70,18 @@ async fn main() {
         }
 
         match positional_args.as_slice() {
-            // `actionbook` (no args), `actionbook --help`, `actionbook help`
-            [] | ["help"] => {
-                handle_home(json_mode, legacy_output);
+            // `actionbook` (no args)
+            [] => {
+                if explicit_help_flag {
+                    handle_help(json_mode, legacy_output);
+                } else {
+                    handle_home(json_mode, legacy_output);
+                }
+                return;
+            }
+            // `actionbook help`
+            ["help"] => {
+                handle_help(json_mode, legacy_output);
                 return;
             }
             // `actionbook browser`, `actionbook browser --help`, `actionbook browser help`

@@ -160,8 +160,16 @@ mod tests {
     #[test]
     fn ensure_hook_command_is_idempotent() {
         let mut v = json!({});
-        ensure_hook_command(&mut v, &["hooks", "SessionStart"], "/bin/actionbook --hook-session-start");
-        ensure_hook_command(&mut v, &["hooks", "SessionStart"], "/bin/actionbook --hook-session-start");
+        ensure_hook_command(
+            &mut v,
+            &["hooks", "SessionStart"],
+            "/bin/actionbook --hook-session-start",
+        );
+        ensure_hook_command(
+            &mut v,
+            &["hooks", "SessionStart"],
+            "/bin/actionbook --hook-session-start",
+        );
         let arr = v["hooks"]["SessionStart"].as_array().expect("array");
         assert_eq!(arr.len(), 1);
     }

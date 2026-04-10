@@ -1,4 +1,4 @@
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 use crate::api::ApiClient;
 use crate::cli::Cli;
@@ -8,7 +8,12 @@ use crate::output::{
     AxiRenderOptions, render_axi_success, resolve_stdout_mode, truncate_text_preview,
 };
 
-pub async fn run(cli: &Cli, area_id: &str, fields: Option<&str>, full: bool) -> Result<(), CliError> {
+pub async fn run(
+    cli: &Cli,
+    area_id: &str,
+    fields: Option<&str>,
+    full: bool,
+) -> Result<(), CliError> {
     let mut config = config::load_config()?;
     if let Some(ref key) = cli.api_key {
         config.api.api_key = Some(key.clone());
@@ -53,7 +58,10 @@ pub async fn run(cli: &Cli, area_id: &str, fields: Option<&str>, full: bool) -> 
         let body_candidate = pick_str_obj(d, &["description", "body", "content"]).unwrap_or("");
         if !body_candidate.is_empty() {
             if full {
-                data.insert("body".to_string(), Value::String(body_candidate.to_string()));
+                data.insert(
+                    "body".to_string(),
+                    Value::String(body_candidate.to_string()),
+                );
             } else {
                 let (preview, truncated, total) = truncate_text_preview(body_candidate, 900);
                 data.insert("body".to_string(), Value::String(preview));
@@ -132,5 +140,6 @@ fn parse_fields(fields: Option<&str>) -> Vec<String> {
 }
 
 fn pick_str_obj<'a>(obj: &'a serde_json::Map<String, Value>, keys: &[&str]) -> Option<&'a str> {
-    keys.iter().find_map(|k| obj.get(*k).and_then(|v| v.as_str()))
+    keys.iter()
+        .find_map(|k| obj.get(*k).and_then(|v| v.as_str()))
 }

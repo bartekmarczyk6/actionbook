@@ -182,7 +182,10 @@ impl ApiClient {
         }
     }
 
-    async fn handle_json_or_text_response(&self, response: reqwest::Response) -> Result<Value, CliError> {
+    async fn handle_json_or_text_response(
+        &self,
+        response: reqwest::Response,
+    ) -> Result<Value, CliError> {
         let status = response.status();
 
         if status.is_success() {
