@@ -164,7 +164,7 @@ fn scalar_to_toon(value: &Value) -> String {
         Value::Null => "null".to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
-        Value::String(s) => s.clone(),
+        Value::String(s) => s.to_string(),
         _ => value.to_string(),
     }
 }

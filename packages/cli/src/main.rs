@@ -120,7 +120,9 @@ async fn main() {
     let is_setup_command = matches!(cli.command.as_ref(), Some(Commands::Setup(_)));
 
     if cli.hook_session_end {
-        let _ = actionbook_cli::hooks::capture_session_end();
+        if let Err(err) = actionbook_cli::hooks::capture_session_end() {
+            tracing::debug!("failed to capture session-end context: {err}");
+        }
         return;
     }
     if cli.hook_session_start {
@@ -168,6 +170,9 @@ async fn main() {
                 println!("{out}");
             } else {
                 eprintln!("error {code}: {e}");
+                if !hint.is_empty() {
+                    eprintln!("hint: {hint}");
+                }
             }
             std::process::exit(1);
         }
@@ -543,8 +548,9 @@ Run actionbook browser <subcommand> --help for full usage and examples.";
 }
 
 fn collapse_home(path: &str) -> String {
-    if let Ok(home) = std::env::var("HOME")
-        && let Some(rest) = path.strip_prefix(&home)
+    if let Some(home) = dirs::home_dir()
+        && let Some(home) = home.to_str()
+        && let Some(rest) = path.strip_prefix(home)
     {
         return format!("~{rest}");
     }

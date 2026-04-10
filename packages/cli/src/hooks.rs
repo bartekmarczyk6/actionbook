@@ -90,11 +90,7 @@ fn ensure_codex_feature_enabled() -> Result<(), CliError> {
     if content.contains("codex_hooks = true") {
         return Ok(());
     }
-    let mut updated = content;
-    if !updated.contains("[features]") {
-        updated.push_str("\n[features]\n");
-    }
-    updated.push_str("codex_hooks = true\n");
+    let updated = upsert_codex_feature(&content);
     std::fs::write(&path, updated)
         .map_err(|e| CliError::Internal(format!("failed to update codex config: {e}")))?;
     Ok(())
@@ -120,7 +116,7 @@ fn ensure_hook_command(root: &mut Value, path: &[&str], command: &str) {
     let mut replaced = false;
     for item in arr.iter_mut() {
         if let Some(cmd) = item.get("command").and_then(|v| v.as_str())
-            && (cmd.contains("--hook-session-start") || cmd.contains("--hook-session-end"))
+            && is_managed_hook_command(cmd)
         {
             *item = json!({ "command": command });
             replaced = true;
@@ -130,6 +126,56 @@ fn ensure_hook_command(root: &mut Value, path: &[&str], command: &str) {
     if !replaced {
         arr.push(json!({ "command": command }));
     }
+}
+
+fn is_managed_hook_command(command: &str) -> bool {
+    let normalized = command.trim();
+    normalized.ends_with("--hook-session-start") || normalized.ends_with("--hook-session-end")
+}
+
+fn upsert_codex_feature(content: &str) -> String {
+    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+    let mut features_start = None;
+    let mut features_end = lines.len();
+
+    for (idx, line) in lines.iter().enumerate() {
+        if line.trim() == "[features]" {
+            features_start = Some(idx);
+            continue;
+        }
+        if features_start.is_some() && line.trim().starts_with('[') {
+            features_end = idx;
+            break;
+        }
+    }
+
+    match features_start {
+        Some(start) => {
+            let has_key = lines[start + 1..features_end]
+                .iter()
+                .any(|l| l.trim_start().starts_with("codex_hooks"));
+            if !has_key {
+                let mut insert_at = features_end;
+                while insert_at > start + 1 && lines[insert_at - 1].trim().is_empty() {
+                    insert_at -= 1;
+                }
+                lines.insert(insert_at, "codex_hooks = true".to_string());
+            }
+        }
+        None => {
+            if !lines.is_empty() && !lines.last().is_some_and(|l| l.is_empty()) {
+                lines.push(String::new());
+            }
+            lines.push("[features]".to_string());
+            lines.push("codex_hooks = true".to_string());
+        }
+    }
+
+    let mut rendered = lines.join("\n");
+    if !rendered.ends_with('\n') {
+        rendered.push('\n');
+    }
+    rendered
 }
 
 fn load_or_empty_object(path: &std::path::Path) -> Value {
@@ -172,5 +218,12 @@ mod tests {
         );
         let arr = v["hooks"]["SessionStart"].as_array().expect("array");
         assert_eq!(arr.len(), 1);
+    }
+
+    #[test]
+    fn upsert_codex_feature_inserts_inside_features_section() {
+        let source = "[features]\na = true\n\n[other]\nx = 1\n";
+        let out = upsert_codex_feature(source);
+        assert!(out.contains("[features]\na = true\ncodex_hooks = true\n\n[other]"));
     }
 }

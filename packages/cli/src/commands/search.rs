@@ -39,8 +39,8 @@ pub async fn run(
     let mut out_items = Vec::new();
     for item in &items {
         let mut row = Map::new();
-        let id = pick_str(item, &["area_id", "id", "action_id"]).unwrap_or("-");
-        let title = pick_str(item, &["title", "name", "summary"]).unwrap_or("-");
+        let id = pick_str(item, &["area_id", "id", "action_id"]).unwrap_or("(no id)");
+        let title = pick_str(item, &["title", "name", "summary"]).unwrap_or("(untitled)");
         let status = pick_str(item, &["status", "state"]).unwrap_or("unknown");
         row.insert("id".to_string(), Value::String(id.to_string()));
         row.insert("title".to_string(), Value::String(title.to_string()));
